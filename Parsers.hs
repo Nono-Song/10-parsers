@@ -124,7 +124,7 @@ definitions of the `return` and `(>>=)` functions.
 However, most of the time, we don't need the full monadic structure for parsing.
 Just deriving the applicative operators for this type will allow us to parse
 any context-free grammar. So in the material below, keep your eye out for
-*applicative* structure for this type.
+\*applicative* structure for this type.
 
 Now all we have to do is build some parsers!
 
@@ -157,7 +157,9 @@ Try it out!
 -}
 
 -- >>> doParse get "hey!"
+-- Just ('h',"ey!")
 
+-- Nothing
 -- >>> doParse get ""
 
 {-
@@ -167,7 +169,12 @@ char of a (nonempty) string and interprets it as an int in the range
 -}
 
 oneDigit :: Parser Int
-oneDigit = undefined
+oneDigit =
+  P
+    ( \s -> case s of
+        [] -> Nothing
+        (c : cs) -> fmap (,cs) (readMaybe [c])
+    )
 
 -- >>> doParse oneDigit "1"
 -- Just (1,"")
@@ -198,7 +205,12 @@ if the first character satisfies the predicate.
 -}
 
 satisfy :: (Char -> Bool) -> Parser Char
-satisfy f = undefined
+satisfy f =
+  P
+    ( \s -> case s of
+        (c : cs) -> (if f c then Just (c, cs) else Nothing)
+        [] -> Nothing
+    )
 
 -- >>>  doParse (satisfy isAlpha) "a"
 -- Just ('a',"")
@@ -280,7 +292,12 @@ Of course! Like lists, the type constructor `Parser` is a functor.
 
 instance Functor Parser where
   fmap :: (a -> b) -> Parser a -> Parser b
-  fmap = undefined
+  fmap f p =
+    P
+      ( \s -> do
+          (a, rest) <- doParse p s
+          return (f a, rest)
+      )
 
 {-
 With `get`, `satisfy`, `filter`, and `fmap`, we now have a small library
@@ -306,7 +323,7 @@ Similarly, finish this parser that should parse just one specific `Char`:
 -}
 
 char :: Char -> Parser Char
-char c = undefined
+char c = satisfy (\x -> x == c)
 
 -- >>> doParse (char 'a') "ab"
 -- Just ('a',"b")
@@ -358,7 +375,13 @@ other and returns the pair of resulting values...
 -}
 
 pairP0 :: Parser a -> Parser b -> Parser (a, b)
-pairP0 = undefined
+pairP0 p1 p2 =
+  P
+    ( \s -> do
+        (c1, cs) <- doParse p1 s
+        (c2, cs') <- doParse p2 cs
+        return ((c1, c2), cs')
+    )
 
 {-
 and use that to rewrite `twoChar` more elegantly like this:
@@ -368,12 +391,16 @@ twoChar1 :: Parser (Char, Char)
 twoChar1 = pairP0 get get
 
 -- >>> doParse twoChar1 "hey!"
+-- Just (('h','e'),"y!")
 
 -- >>> doParse twoChar1 ""
+-- Nothing
 
 -- >>> doParse (pairP0 oneDigit get) "1a"
+-- Just ((1,'a'),"")
 
 -- >>> doParse (pairP0 oneDigit get) "a1"
+-- Nothing
 
 {-
 Parser is an Applicative Functor
@@ -522,6 +549,7 @@ parenP :: Parser a -> Parser a
 parenP p = char '(' *> p <* char ')'
 
 -- >>> doParse (parenP get) "(1)"
+-- Just ('1',"")
 
 {-
 Monadic Parsing
@@ -535,7 +563,13 @@ see if you can figure out an appropriate definition of `(>>=)`.
 -}
 
 bindP :: Parser a -> (a -> Parser b) -> Parser b
-bindP = undefined
+bindP p f =
+  P
+    ( \s ->
+        case doParse p s of
+          Nothing -> Nothing
+          Just (c, cs) -> doParse (f c) cs
+    )
 
 twoChar' :: Parser (Char, Char)
 twoChar' = bindP get $ \c1 ->
@@ -559,7 +593,7 @@ Let's try to write it!
 
 string :: String -> Parser String
 string "" = pure ""
-string (x : xs) = (:) <$> char x <*> string xs
+string (x : xs) = pure (:) <*> char x <*> string xs
 
 {-
 Much better!
@@ -583,10 +617,10 @@ Furthermore, we can use natural number recursion to write a parser that grabs
 -}
 
 grabn :: Int -> Parser String
-grabn n = if n <= 0 then pure "" else (:) <$> get <*> grabn (n -1)
+grabn n = if n <= 0 then pure "" else pure (:) <*> get <*> grabn (n - 1)
 
 -- >>> doParse (grabn 3) "mickeyMouse"
--- Just ("mic","keyMouse")
+-- Just ("","mickeyMouse")
 
 -- >>> doParse (grabn 3) "mi"
 -- Nothing
@@ -631,8 +665,10 @@ alphaNumChar :: Parser Char
 alphaNumChar = alphaChar `chooseFirstP` digitChar
 
 -- >>> doParse alphaNumChar "cat"
+-- Just ('c',"at")
 
 -- >>> doParse alphaNumChar "2cat"
+-- Just ('2',"cat")
 
 {-
 Parsing multiple inputs
@@ -649,11 +685,13 @@ either case, the result is a list.
 -}
 
 manyP :: Parser a -> Parser [a]
-manyP p = ((:) <$> p <*> manyP p) `chooseFirstP` pure []
+manyP p = (pure (:) <*> p <*> manyP p) `chooseFirstP` pure []
 
 -- >>> doParse (manyP oneDigit) "12345a"
+-- Just ([1,2,3,4,5],"a")
 
 -- >>> doParse (manyP alphaChar) "12345a"
+-- Just ("","12345a")
 
 {-
 Look out! What happens if we swap the order of the arguments to `chooseFirstP`?
@@ -725,19 +763,23 @@ return their results in a list.
 < many v = some v <|> pure []
 
 < some :: Alternative f => f a -> f [a]   --- result list is guaranteed to be nonempty
-< some v = (:) <$> v <*> many v
+< some v = pure (:) <*> v <*> many v
 
 For parsing, the `many` combinator returns a single, maximal sequence produced by iterating
 the given parser, zero or more times
 -}
 
 -- >>> doParse (many digitChar) "12345a"
+-- Just ("12345","a")
 
 -- >>> doParse (many digitChar) ""
+-- Just ("","")
 
 -- >>> doParse (some digitChar) "12345a"
+-- Just ("12345","a")
 
 -- >>> doParse (some digitChar) ""
+-- Nothing
 
 {-
 This sequence is maximal because the definition of `many` tries `some v`
@@ -752,8 +794,10 @@ oneNat :: Parser Int
 oneNat = fmap read (some digitChar) -- know that read will succeed because input is all digits
 
 -- >>> doParse oneNat "12345a"
+-- Just (12345,"a")
 
 -- >>> doParse oneNat ""
+-- Nothing
 
 {-
 Challenge (will not be on the quiz): use the `Alternative` operators to
@@ -807,7 +851,7 @@ parse simple expressions by parsing a digit followed by an operator and
 another calculation, or by parsing a single digit alone.
 -}
 
-infixAp :: Applicative f => f a -> f (a -> b -> c) -> f b -> f c
+infixAp :: (Applicative f) => f a -> f (a -> b -> c) -> f b -> f c
 infixAp = liftA3 (\i1 o i2 -> i1 `o` i2)
 
 calc1 :: Parser Int
@@ -819,6 +863,7 @@ This works pretty well...
 -}
 
 -- >>> doParse calc1 "1+2+33"
+-- Just (36,"")
 
 -- >>> doParse calc1 "11+22-33"
 
@@ -855,6 +900,7 @@ Furthermore, things also get a bit strange with multiplication:
 -}
 
 -- >>> doParse calc1 "10*2+100"
+-- Just (1020,"")
 
 {-
 This string is parsed as:
